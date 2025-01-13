@@ -12,6 +12,9 @@ class ScreenCapture:
         self.recording_active = False
         self.capture_thread = None
 
+        self.fast_capture = False  # Mode for better capturing performance: Does img processing after recording
+        self.capture_objs = []
+
     def set_coordinates(self, top: int, left: int, width: int, height: int):
         """
         Set screen recording coordinates
@@ -25,13 +28,22 @@ class ScreenCapture:
     def capture_screen(self):
         """
         Capture one screenshot on the class defined screen coordinates
-        :return: Image as Numpy Array
+        :return: capture object
         """
-
         with mss.mss() as sct:
             capture = sct.grab(self.coords)
-            img_array = np.array(capture)
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_BGRA2BGR)
+
+        return capture
+
+    @staticmethod
+    def capture_post_processing(capture):
+        """
+        Convert capture object to numpy array and convert color BGR required by Video writer
+        :param capture: Capture object
+        :return: Image as numpy array in BGR
+        """
+        img_array = np.array(capture)
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_BGRA2BGR)
 
         return img_array
 
@@ -40,7 +52,7 @@ class ScreenCapture:
         Start recording action. Starts main recording thread
         """
         self.recording_active = True
-        self.capture_thread = threading.Thread(target=self.recording_thread)
+        self.capture_thread = threading.Thread(target=self.recording_thread, args=(self.fast_capture, ))
         self.capture_thread.start()
 
     def stop_recording(self):
@@ -50,7 +62,7 @@ class ScreenCapture:
         self.recording_active = False
         self.capture_thread.join()  # Wait for thread to finish and stop
 
-    def recording_thread(self):
+    def recording_thread(self, fast_capture=False):
         """
         Record screen based on coordinates and fps set in class variables
         """
@@ -76,17 +88,34 @@ class ScreenCapture:
             time.sleep(max(0, wait_time))
 
             # Capture screen and write to video writer
-            img_array = self.capture_screen()
-            writer.write(img_array)
+            capture = self.capture_screen()
+            if fast_capture:
+                # If fast capture active, only save raw capture in class list
+                self.capture_objs.append(capture)
+            else:
+                # If fast capture not active, do post processing for image and write to video
+                img_array = self.capture_post_processing(capture)
+                writer.write(img_array)
 
             # Get actual fps
             now = time.time()
-            actual_fps = 1 / (now - last_time)  # Reciprocal of frame duration
-            print(f"Actual FPS: {actual_fps:.2f}")
+            actual_fps = int(1 / (now - last_time))  # Reciprocal of frame duration
+            print(f"Actual FPS: {actual_fps}")
             last_time = now
 
             # Schedule next frame
             next_frame_time += time_per_frame
+
+        # If fast capture active, do post processing of images and write to video
+        if fast_capture:
+            # Write to video
+            for capture_obj in self.capture_objs:
+                img_array = np.array(capture_obj)
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_BGRA2BGR)
+                writer.write(img_array)
+
+            # Reset capture object list
+            self.capture_objs = []
 
         # Finalize Video
         writer.release()
@@ -94,6 +123,7 @@ class ScreenCapture:
 
 if __name__ == '__main__':
     sc = ScreenCapture()
+    sc.fast_capture = True
     sc.start_recording()
     time.sleep(5)
     sc.stop_recording()
