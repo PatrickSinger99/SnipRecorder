@@ -25,6 +25,9 @@ class ScreenCapture:
         """
         self.coords = {"top": top, "left": left, "width": width, "height": height}
 
+    def set_fast_capture(self, value: bool):
+        self.fast_capture = value
+
     def capture_screen(self):
         """
         Capture one screenshot on the class defined screen coordinates
@@ -36,14 +39,17 @@ class ScreenCapture:
         return capture
 
     @staticmethod
-    def capture_post_processing(capture):
+    def capture_post_processing(capture, to_rgb=False):
         """
         Convert capture object to numpy array and convert color BGR required by Video writer
         :param capture: Capture object
-        :return: Image as numpy array in BGR
+        :param to_rgb: return as RGB and not as BGR by default
+        :return: Image as numpy array in BGR (if to_rgb set to false)
         """
         img_array = np.array(capture)
         img_array = cv2.cvtColor(img_array, cv2.COLOR_BGRA2BGR)
+        if to_rgb:
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
 
         return img_array
 

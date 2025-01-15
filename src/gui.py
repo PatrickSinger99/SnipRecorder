@@ -1,10 +1,16 @@
 import tkinter as tk
 import pyautogui
+from utils import *
+from recorder import ScreenCapture
+from PIL import Image, ImageTk
 
 
 class TransparentSelector(tk.Toplevel):
     def __init__(self):
         super().__init__()
+
+        # Variable for returning selected area
+        self.selected_area = []
 
         # Get the screen size
         screen_width = self.winfo_screenwidth()
@@ -90,12 +96,15 @@ class TransparentSelector(tk.Toplevel):
         if self.selection_made:
             print(f"Selected Area: ({self.actual_cursor_start_x}, {self.actual_cursor_start_y}) to "
                   f"({self.actual_cursor_end_x}, {self.actual_cursor_end_y})")
+
+            self.selected_area = [self.actual_cursor_start_x, self.actual_cursor_start_y,
+                                  self.actual_cursor_end_x, self.actual_cursor_end_y]
+
         else:
             print("No selection was made")
+            self.selected_area = []
 
         self.destroy()
-
-
 
 
 class App(tk.Tk):
@@ -105,27 +114,71 @@ class App(tk.Tk):
         self.title("Snip Recorder")
         self.resizable(False, False)
 
+        self.recorder = ScreenCapture()
+
         self.control_frame = tk.Frame(self)
         self.control_frame.pack(side="top")
 
-        self.select_area_btn = tk.Button(self.control_frame, text="Select Area", command=self.start_draw_selection)
+        self.select_area_btn = tk.Button(self.control_frame, text="Select Area", command=self.start_draw_selection,
+                                         cursor="hand2")
         self.select_area_btn.pack(side="left")
 
-        self.select_audio_btn = tk.Button(self.control_frame, text="Audio Channel")
+        self.select_audio_btn = tk.Button(self.control_frame, text="Audio Channel", cursor="hand2")
         self.select_audio_btn.pack(side="left")
 
-        self.record_btn = tk.Button(self.control_frame, text="Start Recording")
+        self.fast_rec_mode_check_var = tk.BooleanVar(value=False)
+        self.fast_rec_mode_check = tk.Checkbutton(self.control_frame, text="Performance Mode", cursor="hand2",
+                                                  variable=self.fast_rec_mode_check_var)
+        self.fast_rec_mode_check.pack(side="left")
+
+        self.record_btn = tk.Button(self.control_frame, text="Start Recording", command=self.on_recording_button,
+                                    cursor="hand2")
         self.record_btn.pack(side="left")
 
         self.area_preview_frame = tk.Frame(self, height=300)
         self.area_preview_frame.pack(side="bottom", fill="x")
         self.area_preview_frame.pack_propagate(False)
 
-        self.area_preview_img = tk.Label(self.area_preview_frame, bg="green")
-        self.area_preview_img.pack(anchor="center")
+        self.preview_img = None
+        self.area_preview_img = tk.Label(self.area_preview_frame, bg=self.area_preview_frame.cget("bg"))
+        self.area_preview_img.pack(anchor="center", fill="y", expand=True)
 
     def start_draw_selection(self):
         selector = TransparentSelector()
+        self.wait_window(selector)
+
+        if len(selector.selected_area) != 0:
+            self.set_new_recording_area(*selector.selected_area)
+
+    def on_recording_button(self):
+        if not self.recorder.recording_active:
+            # Change Button Appearance:
+            self.record_btn.configure(text="Stop Recording")
+
+            self.recorder.set_fast_capture(self.fast_rec_mode_check_var.get())
+            self.recorder.start_recording()
+
+        else:
+            # Change Button Appearance:
+            self.record_btn.configure(text="Start Recording")
+
+            self.recorder.stop_recording()
+
+    def set_new_recording_area(self, x0, y0, x1, y1):
+        print(f"Setting recording area to ({x0}, {y0}) - ({x1}, {y1})")
+
+        top, left = min(y0, y1), min(x0, x1)
+        width, height = max(x0, x1) - left, max(y0, y1) - top
+
+        self.recorder.set_coordinates(top, left, width, height)
+
+        # Set Preview image
+        capture = self.recorder.capture_screen()
+        img_array = self.recorder.capture_post_processing(capture, to_rgb=True)
+        resized_img = resize_image(img_array, max_width=self.area_preview_frame.winfo_width() - 8,
+                                   max_height=self.area_preview_frame.winfo_height() - 8)
+        self.preview_img = ImageTk.PhotoImage(Image.fromarray(resized_img))
+        self.area_preview_img.configure(image=self.preview_img)
 
 
 if __name__ == '__main__':
