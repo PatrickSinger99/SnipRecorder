@@ -1,4 +1,5 @@
 import cv2
+from PIL import Image, ImageTk
 
 
 def resize_image(img_array, max_width, max_height):
@@ -28,3 +29,22 @@ def resize_image(img_array, max_width, max_height):
     resized_image = cv2.resize(img_array, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
     return resized_image
+
+
+def change_icon_color(img_obj: Image, target_color: tuple):
+
+    img_obj = img_obj.convert('RGBA')  # Open the source image and convert it to RGBA mode
+    data = img_obj.getdata()  # Load the image data into a list
+
+    # Create a new data list
+    new_data = []
+
+    # Replace black color with the desired target color
+    for item in data:
+        # Change all black (also shades of blacks) pixels to the target color
+        new_data.append((target_color[0], target_color[1], target_color[2], item[3]))
+
+    # Update image data
+    img_obj.putdata(new_data)
+
+    return img_obj
