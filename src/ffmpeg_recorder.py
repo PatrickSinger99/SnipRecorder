@@ -5,16 +5,29 @@ import mss
 import threading
 import subprocess
 import queue
+import pyaudio
 
 
 class ScreenCapture:
-    def __init__(self):
+    def __init__(self, verbose: int = 1):
         self.coords = {"top": 0, "left": 0, "width": 1000, "height": 1000}
+        self.verbose = verbose
         self.fps = 30
         self.recording_active = False
-        self.recording_thread = None  # Thread for the recording loop
+        self.video_rec_thread = None  # Thread for the recording loop
+        self.audio_rec_thread = None
+        self.audio_queue = queue.Queue()
         self.ffmpeg_process = None  # Subprocess for ffmpeg
         self.info_queue = queue.Queue()
+
+        # Audio
+        self.pyaudio = pyaudio.PyAudio()
+        self.format = pyaudio.paInt16   # Sample format (16-bit)
+        self.channels = 2  # Stereo
+        self.buffer_size = 1024
+        # Inital call. Get wasapi recording device, if none available, returns None
+        self.audio_rec_device = self.get_wasapi_recording_device()
+        self.record_audio = True if self.audio_rec_device is not None else False
 
     def set_coordinates(self, top: int, left: int, width: int, height: int):
         """
@@ -78,29 +91,43 @@ class ScreenCapture:
                 "-pix_fmt", "bgra",  # Raw RGB format
                 "-s", f"{self.coords["width"]}x{self.coords["height"]}",  # Frame size
                 "-r", str(self.fps),  # Frame rate
-                "-i", "pipe:",  # Read input from stdin
+                "-i", "pipe:0",  # Video input
                 "-c:v", "libx264",  # Encode video using H.264
                 "-preset", "fast",  # Compression speed
                 "-crf", "23",  # Quality (lower is better, 17–28 typical)
                 "-pix_fmt", "yuv420p",  # Output pixel format for compatibility
+                "-c:a", "aac",  # Audio codec
+                "-b:a", "192k",  # Audio bitrate
+                "-f", "s16le",  # Raw PCM audio format
+                "-ar", "44100",  # Audio sample rate
+                "-ac", "2",  # Audio channels
+                "-i", "pipe:1",  # Audio input
                 "-loglevel", "info",  # Suppress all but errors
                 "output.mp4",  # Output file
             ],
             stdin=subprocess.PIPE,
+            bufsize=10 ** 8
         )
 
-        # Start recording thread
-        self.recording_thread = threading.Thread(target=self.recording, args=(self.info_queue, ))
-        self.recording_thread.start()
+        # Start audio recording thread
+        if self.record_audio:
+            self.audio_rec_thread = threading.Thread(target=self._audio_capture, args=(self.audio_queue,))
+            self.audio_rec_thread.start()
+
+        # Start video recording thread
+        self.video_rec_thread = threading.Thread(target=self._video_capture, args=(self.info_queue,))
+        self.video_rec_thread.start()
 
     def stop_recording(self):
         """
         Stop recording action. Stops main recording thread
         """
         self.recording_active = False
-        self.recording_thread.join()  # Wait for thread to finish and stop
+        self.video_rec_thread.join()  # Wait for thread to finish and stop
+        if self.record_audio:
+            self.audio_rec_thread.join()
 
-    def recording(self, info_queue, verbose=True):
+    def _video_capture(self, info_queue, verbose=True):
         """
         Record screen based on coordinates and fps set in class variables
         """
@@ -140,6 +167,11 @@ class ScreenCapture:
             self.ffmpeg_process.stdin.write(capture.raw)
             frames_written += 1
 
+            # Add Audio to stream if set and available
+            if self.record_audio and not self.audio_queue.empty():
+                audio_chunk = self.audio_queue.get()
+                self.ffmpeg_process.stdin.write(audio_chunk)
+
             # Handle prints if verbose is set
             if verbose:
                 current_time = time.monotonic()
@@ -175,6 +207,86 @@ class ScreenCapture:
 
         # Update info queue
         info_queue.put({"status": "done"})
+
+    def _audio_capture(self, audio_queue):
+        device_index = self.audio_rec_device["index"]
+        sample_rate = int(self.audio_rec_device["defaultSampleRate"])
+
+        stream = self.pyaudio.open(
+            format=self.format,
+            channels=self.channels,
+            rate=sample_rate,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=self.buffer_size
+        )
+
+        while self.recording_active:
+            audio_chunk = stream.read(self.buffer_size, exception_on_overflow=False)
+            audio_queue.put(audio_chunk)
+
+        stream.stop_stream()
+        stream.close()
+
+    def get_wasapi_recording_device(self):
+        # Get available host apis and find wasapi index
+        wasapi_api = None
+        for i in range(self.pyaudio.get_host_api_count()):
+            info = self.pyaudio.get_host_api_info_by_index(i)
+            if "wasapi" in info['name'].lower():
+                wasapi_api = i
+                if self.verbose >= 2:
+                    print(f"WASAPI Host API: {wasapi_api}")
+                break
+
+        # BREAK if no WASAPI Api available
+        if wasapi_api is None:
+            if self.verbose >= 1:
+                print("WASAPI API not found!")
+                return None
+
+        # Find all stereo mix devices and select the one with wasapi
+        wasapi_device = None
+        stereo_mix_devices = self.get_stereo_mix_devices()
+        for device in stereo_mix_devices:
+            if device["hostApi"] == wasapi_api:
+                wasapi_device = device
+                break
+
+        # BREAK if no WASAPI device is available
+        if wasapi_device is None:
+            if self.verbose >= 1:
+                print("No Stereo Mix Device with WASAPI API found")
+                return None
+
+        if self.verbose >= 1:
+            print(f"WASAPI Stereo Mix Device found: Name={wasapi_device['name']}, Index={wasapi_device['index']}, "
+                  f"Sample Rate={wasapi_device['defaultSampleRate']}")
+        return wasapi_device
+
+    def get_stereo_mix_devices(self):
+
+        # Get all stereo mix devices
+        stereo_mix_devices = []
+        for i in range(self.pyaudio.get_device_count()):
+            dev_info = self.pyaudio.get_device_info_by_index(i)
+            if "stereo mix" in dev_info["name"].lower():
+                stereo_mix_devices.append(dev_info)
+
+        # Check if devices can be read from
+        working_devices = []
+        for device in stereo_mix_devices:
+            try:
+                self.pyaudio.open(format=self.format, channels=self.channels, rate=int(device["defaultSampleRate"]),
+                                  input=True, input_device_index=device["index"], frames_per_buffer=self.buffer_size)
+                working_devices.append(device)
+            except Exception as e:
+                if self.verbose >= 2:
+                    print(f"(!) Could not open device {device['name']} on index {device['index']}:", e)
+
+        if self.verbose >= 2:
+            print(f"Found {len(working_devices)} readable stereo mix devices (from {len(stereo_mix_devices)} total).")
+        return working_devices
 
 
 if __name__ == '__main__':
